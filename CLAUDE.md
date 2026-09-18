@@ -8,8 +8,9 @@ Peta keputusan interaktif untuk **alur gudang retur** — dari kolom `Status Ker
 di Spreadsheet sampai Internal Transfer tervalidasi di **Odoo**. Tujuannya bukan sekadar
 dokumentasi: aplikasi ini dipakai saat entry data harian untuk **mencegah salah entry**.
 
-Situs statis murni: tanpa build step, tanpa dependency, tanpa framework. Tiga file JS/CSS
-dimuat langsung oleh `index.html` sebagai classic script (bukan ES module).
+Situs statis murni: tanpa build step, tanpa dependency npm. Semua file JS dimuat langsung
+oleh `index.html` sebagai classic script (bukan ES module), jadi **urutan tag `<script>`
+menentukan** — `data.js` sebelum `app.js`, `photos.js` sebelum `app.js`, vendor paling awal.
 
 Bahasa seluruh konten, UI, commit message, dan komentar kode: **Bahasa Indonesia**.
 Pertahankan itu saat menambah apa pun.
@@ -25,7 +26,19 @@ npx http-server -p 8080 .        # lalu buka http://127.0.0.1:8080
 # cek sintaks setelah mengubah JS (satu-satunya "test" cepat yang ada)
 node --check assets/js/app.js
 node --check assets/js/data.js
+node --check assets/js/photos.js
+node --check sw.js
 node -e "JSON.parse(require('fs').readFileSync('vercel.json','utf8'))"
+node -e "JSON.parse(require('fs').readFileSync('manifest.webmanifest','utf8'))"
+```
+
+Buka lewat `http://localhost`/`127.0.0.1`, jangan `file://` — service worker dan IndexedDB
+tidak aktif di `file://`.
+
+Memeriksa isi `data.js` tanpa browser (const di file ini tidak bisa di-`require`):
+
+```bash
+node -e "const s=require('fs').readFileSync('assets/js/data.js','utf8');(0,eval)(s+';console.log(RULES.length, SHEET_COLUMNS.length)')"
 ```
 
 ### Smoke test browser
@@ -51,11 +64,17 @@ Output Directory `.`. Setiap push ke branch menghasilkan preview deployment.
 ### Aturan utama: data terpisah dari tampilan
 
 ```
-assets/js/data.js   → SELURUH isi SOP (global: REF, FLOW, WIZARD, OPEN_QUESTIONS_INTRO)
-assets/js/app.js    → IIFE yang merender data itu; tidak berisi kalimat SOP satu pun
-assets/css/style.css→ token warna + animasi
-index.html          → shell statis; data.js WAJIB dimuat sebelum app.js
+assets/js/data.js          → SELURUH isi SOP + aturan (lihat daftar global di bawah)
+assets/js/photos.js        → modul Photos: simpan foto bukti di IndexedDB (berdiri sendiri)
+assets/js/app.js           → IIFE yang merender semuanya; tidak berisi kalimat SOP satu pun
+assets/vendor/qrcode-generator.js → QR untuk poster cetak (MIT, Kazuhiko Arase) — jangan diedit
+assets/css/style.css       → token warna + animasi + gaya cetak
+sw.js, manifest.webmanifest→ offline / PWA
+index.html                 → shell statis
 ```
+
+Global yang diekspor `data.js`: `META`, `REF`, `NOMOR`, `STEPS`, `step()`, `FLOW`, `WIZARD`,
+`JALUR_BUNTU`, `FORM`, `RULES`, `SHEET_COLUMNS`, `OUTPUT`, `OPEN_QUESTIONS_INTRO`.
 
 **Mengubah SOP = mengubah `data.js` saja.** Diagram pohon, mode simulasi, checklist,
 pencarian, statistik, daftar "perlu dikonfirmasi", dan daftar "aturan anti-salah entry"
@@ -80,15 +99,58 @@ Pohon rekursif lewat `children`. Field yang dikenali:
 | `detail.warn[]` | kesalahan yang sering terjadi → ikut masuk tab "Catatan & PR" |
 | `detail.confirm[]` | pertanyaan terbuka → ikut masuk tab "Catatan & PR" |
 
-`REF` (data.js:8) menampung string yang dipakai berulang (nama database, nama menu Odoo,
-kode lokasi `GDP/Stock` / `RT-GD/Stock`). Pakai `REF` daripada mengetik ulang string itu.
+`REF` menampung string yang dipakai berulang (nama database, nama menu Odoo, kode lokasi
+`GDP/Stock` / `RT-GD/Stock`). Pakai `REF` daripada mengetik ulang string itu.
 
-### Skema wizard (`WIZARD`, data.js:448)
+### Pustaka langkah (`STEPS` + `step()`)
+
+Langkah yang muncul di lebih dari satu cabang (`odoo-db`, `isi-form`, `validate`) ditulis
+sekali di `STEPS`, lalu dipanggil `step('odoo-db', { id:'c1-odoo', children:[…] })`.
+Fungsi `step()` menyalin node dan menggabung `detail` dengan override.
+
+**Jangan pernah menyalin-tempel langkah yang sama ke dua cabang.** Kalau sebuah langkah mulai
+muncul dua kali, pindahkan ke `STEPS` dulu. Duplikasi persis itu yang menyebabkan satu
+langkah punya dua versi berbeda saat SOP berubah.
+
+### Nomor retur (`NOMOR`)
+
+Format `RT-BBTT-NNN`, menjadi kunci penghubung antara Spreadsheet, Odoo (`Source Document`),
+nota, dan nama file foto. `NOMOR.build()` menyusunnya; di `app.js` objek `Nomor` membungkusnya
+dengan penghitung urutan di localStorage (`returSeq:<BBTT>`), `peek()` untuk menyarankan nomor
+berikutnya dan `commit()` saat nomor benar-benar dipakai.
+
+### Entry harian (`FORM`, `RULES`, `SHEET_COLUMNS`, `OUTPUT`)
+
+- `FORM` — field yang diminta setelah pertanyaan selesai. `when(ctx)` menentukan field muncul
+  atau tidak; `auto: 'retur' | 'today'` mengisi nilai awal.
+- `RULES` — pemeriksaan silang. `when(ctx)` bernilai **true berarti ADA pelanggaran**.
+  `level`: `danger` (jangan dilanjutkan) / `warn` / `info`.
+- `SHEET_COLUMNS` — urutan kolom baris Spreadsheet. Ini satu-satunya tempat yang perlu diubah
+  kalau urutan kolom Spreadsheet pemilik proses berbeda.
+- `OUTPUT` — teks siap tempel (Note Odoo, baris Spreadsheet). Satu sumber untuk kedua tujuan,
+  supaya isinya mustahil berbeda.
+
+`ctx` yang dilewatkan ke `when()` dan `OUTPUT` adalah gabungan jawaban wizard (`carry`),
+isian form, dan dua nilai turunan dari penyimpanan foto: `fotoScreenshot` dan `fotoCount`.
+Karena itu menaruh foto berkategori `screenshot` otomatis mematikan aturan
+`beda-tanpa-screenshot`.
+
+### Skema wizard (`WIZARD`)
 
 Mesin state sederhana: `steps[id].options[]` masing-masing punya `next` (id pertanyaan
 berikutnya) **atau** `result` (id node di `FLOW`). Hasil simulasi dirender dari node tujuan,
 jadi langkah SOP tidak pernah ditulis dua kali. `carry` mengisi breadcrumb jawaban.
 Menambah cabang baru di `FLOW` biasanya berarti menambah opsi di sini juga.
+
+Wizard punya **tiga fase** (`wz.phase`): `q` (pertanyaan) → `form` (isi data + foto) →
+`result` (aturan silang, langkah, teks siap tempel, checklist, foto). Cabang yang ada di
+`JALUR_BUNTU` (Cancel, Potong Nota) melompati fase `form` karena alurnya memang belum ada.
+Tombol Kembali menuruni fase dulu, baru menarik pertanyaan dari `wz.stack`.
+
+Field form dirender sekali lalu **tidak pernah di-render ulang saat mengetik** — hanya nilai
+di `wz.form` dan blok `#wzAlerts` yang diperbarui, supaya fokus kursor tidak lompat. Ini aman
+karena `when()` pada `FORM` hanya bergantung pada jawaban wizard, yang tidak berubah selama
+fase form.
 
 ### Pipeline render pohon (`render()`, app.js:173)
 
@@ -119,6 +181,28 @@ ada sebelum tahap 3.
   Garis baru digambar dengan `stroke-dashoffset` (`--len` + class `link-draw`).
 - Semua animasi dimatikan oleh blok `prefers-reduced-motion` di akhir `style.css`.
 
+### Nama class bentrok — pernah menggigit sekali
+
+`.tab` sudah dipakai untuk tab navigasi (`display:flex`). Penanda kolom di blok teks siap
+tempel sempat memakai nama yang sama dan berubah jadi flex, membuat setiap sel pecah ke
+barisnya sendiri. Sekarang namanya `.tabmark`. Sebelum menambah nama class generik
+(`.tab`, `.box`, `.check`, `.field`), grep dulu — stylesheet ini satu berkas tanpa scoping.
+
+### Offline / PWA
+
+`sw.js` memakai network-first untuk navigasi (pembaruan langsung terlihat) dan
+stale-while-revalidate untuk aset. **Saat menambah berkas baru yang harus tersedia offline,
+tambahkan ke array `INTI` dan naikkan `VERSI`** — kalau tidak, perangkat lama tetap memegang
+cache lama. Service worker hanya didaftarkan di https atau localhost.
+
+### Poster cetak
+
+`buildPrintSheet()` membangun `#printSheet` dari data (bukan HTML statis), `doPrint()`
+mencetaknya. Gaya cetak ada di blok `@media print` di akhir `style.css`; di luar cetak
+`#printSheet` `display:none`. QR dibuat dari `location.href` saat itu juga, jadi tidak ada
+domain yang di-hardcode. Verifikasi hasil cetak lewat `page.pdf()` di Playwright, bukan
+screenshot biasa — screenshot media print tidak mengecat latar putih.
+
 ### Angka ajaib yang harus dijaga selaras
 
 Tinggi topbar **63px** muncul di tiga tempat di `style.css`: `.stage` (baris ~153),
@@ -136,10 +220,21 @@ luar ditangani listener `pointerdown` di `document`. Di ≤640px panel menjadi b
 dan scrim baru aktif. `select()` memanggil `ensureVisible()` supaya kartu terpilih tidak
 tertutup panel.
 
+### Penyimpanan foto (`photos.js`)
+
+IndexedDB `gudang-retur`, object store `bukti`, dikelompokkan lewat index `noRetur`.
+Gambar di atas 400 KB dikecilkan ke sisi terpanjang 1800 px sebelum disimpan.
+`Photos.fileName()` menamai unduhan mengikuti nomor retur.
+
+Foto hanya ada di peramban perangkat itu. Jangan menyebutnya backup di teks UI mana pun —
+statusnya penampungan sementara sebelum dilampirkan ke Odoo, dan aplikasi harus terus
+mengatakan itu apa adanya.
+
 ### localStorage
 
 - `chk:<nodeId>:<index>` → status centang checklist
 - `theme` → `"dark"` / `"light"`
+- `returSeq:<BBTT>` → urutan nomor retur terakhir yang dipakai pada bulan itu
 
 **Checklist disimpan per indeks.** Menyisipkan atau mengurutkan ulang item di
 `detail.checklist` membuat centang lama menempel ke kalimat yang salah. Kalau perlu
@@ -161,10 +256,12 @@ Aplikasi ini dipakai untuk mengambil keputusan nyata di gudang. Karena itu:
 
 ### Yang masih terbuka saat ini
 
-1. Status **Stok Mobil 1/2** dipetakan ke menu `…GD Ke Gudang Retur` sesuai penjelasan
+1. Tempat simpan screenshot belum ditetapkan resmi; aplikasi merekomendasikan attachment di
+   record Odoo, tapi masih ditandai sebagai pertanyaan terbuka sampai dikonfirmasi.
+2. Status **Stok Mobil 1/2** dipetakan ke menu `…GD Ke Gudang Retur` sesuai penjelasan
    pemilik proses, padahal source location-nya kemungkinan lokasi mobil. Menunggu konfirmasi
    (tercatat di `detail.confirm` node `c1`).
-2. Cabang **Cancel** (`c3`) dan **Potong Nota** (`c4`) baru berupa placeholder `pending`
+3. Cabang **Cancel** (`c3`) dan **Potong Nota** (`c4`) baru berupa placeholder `pending`
    berikut daftar pertanyaannya.
 
 ## Git

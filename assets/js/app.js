@@ -25,6 +25,11 @@ const ICON = {
   copy:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></svg>',
   map:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2Z"/><path d="M9 4v14M15 6v14"/></svg>',
   spark:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="m12 3 2.2 4.8L19 10l-4.8 2.2L12 17l-2.2-4.8L5 10l4.8-2.2Z"/></svg>',
+  image:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m21 16-5-5-5 5-2-2-5 5"/></svg>',
+  download:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 19h16"/></svg>',
+  trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
+  shield:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3l8 3v6c0 5-3.4 8.3-8 9-4.6-.7-8-4-8-9V6Z"/><path d="m9 12 2 2 4-4"/></svg>',
+  print:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M7 9V3h10v6"/><rect x="3" y="9" width="18" height="7" rx="2"/><path d="M7 14h10v7H7z"/></svg>',
 };
 const store = {
   get(k, d){ try{ const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v);}catch{ return d; } },
@@ -528,6 +533,10 @@ function setView(name){
   if(name !== 'tree') closePanel();
   movePill();
   if(name === 'tree') requestAnimationFrame(() => render());
+  if(name === 'checklist'){
+    renderArsip();                               // arsip foto bisa berubah kapan saja
+    const nx = $('#nomorNext'); if(nx) nx.textContent = Nomor.peek();
+  }
 }
 $$('.tab').forEach(t => t.addEventListener('click', () => setView(t.dataset.view)));
 
@@ -547,76 +556,370 @@ $('#legendToggle').addEventListener('click', () => {
   $('#legendToggle').setAttribute('aria-expanded', l.classList.contains('is-closed') ? 'false' : 'true');
 });
 
+/* ------------------------------ nomor retur ------------------------------ */
+const Nomor = {
+  seqKey(d){ return `returSeq:${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getFullYear() % 100).padStart(2, '0')}`; },
+  peek(date = new Date()){ return NOMOR.build(date, store.get(this.seqKey(date), 0) + 1); },
+  commit(no){
+    const m = /^RT-(\d{2})(\d{2})-(\d{3})$/.exec(String(no || '').trim());
+    if(!m) return;
+    const key = `returSeq:${m[1]}${m[2]}`;
+    const val = parseInt(m[3], 10);
+    if(val > store.get(key, 0)) store.set(key, val);
+  },
+};
+
+/* ------------------------------ aturan silang ------------------------------ */
+function evalRules(ctx){
+  return RULES.filter(r => { try{ return r.when(ctx); }catch{ return false; } });
+}
+const RULE_ICON = { danger:ICON.warn, warn:ICON.warn, info:ICON.ask };
+function alertsHTML(hits){
+  if(!hits.length){
+    return `<div class="alert ok">${ICON.check}<div><b>Tidak ada kontradiksi terdeteksi</b>
+      <span>Semua jawaban konsisten satu sama lain. Tetap cocokkan dengan fisik barang.</span></div></div>`;
+  }
+  const order = { danger:0, warn:1, info:2 };
+  return hits.slice().sort((a, b) => order[a.level] - order[b.level]).map(r => `
+    <div class="alert ${r.level}">${RULE_ICON[r.level]}
+      <div><b>${r.title}</b><span>${r.msg}</span></div></div>`).join('');
+}
+
+/* ------------------------------ teks siap tempel ------------------------------ */
+function blockHTML(id, title, note, text){
+  return `<div class="outblock">
+    <div class="outblock-head">
+      <div><b>${title}</b>${note ? `<span>${note}</span>` : ''}</div>
+      <button class="btn ghost sm" data-copy="${id}">${ICON.copy} Salin</button>
+    </div>
+    <pre id="${id}">${text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\t/g, '<i class="tabmark">→</i>')}</pre>
+  </div>`;
+}
+function outputsHTML(ctx){
+  return `
+    ${blockHTML('outNote', 'Note untuk Odoo', 'tempel ke field Note pada form transfer', OUTPUT.odooNote(ctx))}
+    ${blockHTML('outSrc', 'Source Document', 'tempel ke field Source Document', ctx.noRetur || '')}
+    ${blockHTML('outRow', 'Baris untuk Spreadsheet', 'pilih sel pertama baris kosong lalu tempel — kolom terisi otomatis', OUTPUT.sheetRow(ctx))}
+    <button class="btn ghost sm" data-copy-text="header">${ICON.list} Salin baris judul kolom</button>`;
+}
+function copyText(text, label){
+  navigator.clipboard?.writeText(text)
+    .then(() => toast(label + ' disalin'))
+    .catch(() => toast('Gagal menyalin'));
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-copy]');
+  if(b){
+    const pre = document.getElementById(b.dataset.copy);
+    if(!pre) return;
+    const raw = pre.textContent.replace(/→/g, '\t');
+    if(b.dataset.copy === 'outRow') Nomor.commit(wz.form.noRetur);
+    copyText(raw, 'Teks');
+    return;
+  }
+  const h = e.target.closest('[data-copy-text="header"]');
+  if(h) copyText(OUTPUT.sheetHeader(), 'Baris judul kolom');
+});
+
+/* ------------------------------ foto bukti ------------------------------ */
+const foto = {
+  kategori: 'barang',
+  busy: false,
+
+  zoneHTML(){
+    return `<div class="fotobox">
+      <div class="fotobox-top">
+        <select class="sel" id="fotoKat" aria-label="Jenis bukti">
+          ${Photos.KATEGORI.map(k => `<option value="${k.key}">${k.label}</option>`).join('')}
+        </select>
+        <span class="fotobox-note">Tersimpan di perangkat ini, dikelompokkan per nomor retur</span>
+      </div>
+      <button class="drop" id="fotoDrop">
+        ${ICON.image}
+        <b>Taruh foto di sini</b>
+        <span>Klik untuk pilih file, seret gambar ke sini, atau tekan <kbd>Ctrl</kbd>+<kbd>V</kbd> setelah screenshot</span>
+      </button>
+      <input type="file" id="fotoInput" accept="image/*" multiple hidden />
+      <div class="fotogrid" id="fotoGrid"></div>
+    </div>`;
+  },
+
+  bind(){
+    const drop = $('#fotoDrop'), input = $('#fotoInput'), kat = $('#fotoKat');
+    if(!drop) return;
+    kat.value = this.kategori;
+    kat.addEventListener('change', () => { this.kategori = kat.value; });
+    drop.addEventListener('click', e => { e.preventDefault(); input.click(); });
+    input.addEventListener('change', () => { this.take([...input.files]); input.value = ''; });
+    ['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => {
+      e.preventDefault(); drop.classList.add('is-over');
+    }));
+    ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => {
+      e.preventDefault(); drop.classList.remove('is-over');
+    }));
+    drop.addEventListener('drop', e => this.take([...(e.dataTransfer?.files || [])]));
+    this.refresh();
+  },
+
+  async take(files){
+    const imgs = files.filter(f => f.type.startsWith('image/'));
+    if(!imgs.length){ toast('Hanya file gambar yang bisa ditaruh di sini'); return; }
+    if(this.busy) return;
+    this.busy = true;
+    try{
+      for(const f of imgs) await Photos.add(f, { noRetur:wz.form.noRetur, kategori:this.kategori });
+      Nomor.commit(wz.form.noRetur);
+      toast(imgs.length > 1 ? `${imgs.length} foto tersimpan` : 'Foto tersimpan');
+      await this.refresh();
+      refreshAlerts();
+    }catch(err){
+      toast('Gagal menyimpan foto: ' + err.message);
+    }finally{ this.busy = false; }
+  },
+
+  async list(){
+    try{ return await Photos.listBy(wz.form.noRetur); }catch{ return []; }
+  },
+
+  async refresh(){
+    const grid = $('#fotoGrid');
+    if(!grid) return;
+    const recs = await this.list();
+    this.cache = recs;
+    if(!recs.length){
+      grid.innerHTML = `<p class="fotogrid-empty">Belum ada foto untuk nomor ini.</p>`;
+      return;
+    }
+    grid.innerHTML = recs.map((r, i) => `
+      <figure class="fotoitem">
+        <img src="${URL.createObjectURL(r.blob)}" alt="${Photos.labelKategori(r.kategori)}" loading="lazy" />
+        <figcaption>${Photos.labelKategori(r.kategori)}</figcaption>
+        <div class="fotoitem-act">
+          <button data-foto-dl="${r.id}" title="Unduh">${ICON.download}</button>
+          <button data-foto-rm="${r.id}" title="Hapus">${ICON.trash}</button>
+        </div>
+      </figure>`).join('') +
+      `<button class="btn ghost sm fotogrid-all" data-foto-all>${ICON.download} Unduh semua (${recs.length})</button>`;
+  },
+};
+
+document.addEventListener('click', async e => {
+  const dl = e.target.closest('[data-foto-dl]');
+  const rm = e.target.closest('[data-foto-rm]');
+  const all = e.target.closest('[data-foto-all]');
+  if(!dl && !rm && !all) return;
+  const recs = foto.cache || [];
+  if(dl){
+    const r = recs.find(x => x.id === +dl.dataset.fotoDl);
+    if(r) Photos.download(r, recs.filter(x => x.kategori === r.kategori).indexOf(r) + 1);
+  }
+  if(all) recs.forEach((r, i) => setTimeout(() => Photos.download(r, i + 1), i * 250));
+  if(rm){
+    await Photos.remove(+rm.dataset.fotoRm);
+    toast('Foto dihapus');
+    await foto.refresh();
+    refreshAlerts();
+  }
+});
+
 /* ------------------------------ wizard ------------------------------ */
-const wz = { stack:[], carry:{}, current:WIZARD.start, result:null };
+const wz = { stack:[], carry:{}, form:{}, current:WIZARD.start, result:null, phase:'q' };
+
+const isBuntu = () => JALUR_BUNTU.includes(wz.carry.jalur);
+function wzCtx(){
+  const fotos = foto.cache || [];
+  return {
+    ...wz.carry, ...wz.form,
+    fotoScreenshot: fotos.some(f => f.kategori === 'screenshot'),
+    fotoCount: fotos.length,
+  };
+}
+const wzFields = () => { const c = wzCtx(); return FORM.filter(f => !f.when || f.when(c)); };
+
+function refreshAlerts(){
+  const box = $('#wzAlerts');
+  if(box) box.innerHTML = alertsHTML(evalRules(wzCtx()));
+}
+
+function fieldHTML(f, val){
+  const esc = v => String(v ?? '').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  if(f.type === 'check'){
+    return `<label class="fld-check"><input type="checkbox" data-f="${f.key}" ${val ? 'checked' : ''} />
+      <span class="box">${ICON.check}</span><span>${f.label}</span></label>`;
+  }
+  const inp = f.type === 'textarea'
+    ? `<textarea data-f="${f.key}" rows="3">${esc(val)}</textarea>`
+    : `<input type="${f.type}" data-f="${f.key}" value="${esc(val)}" ${f.type === 'number' ? 'min="0" step="1"' : ''} />`;
+  return `<label class="fld${f.type === 'textarea' ? ' wide' : ''}">
+    <span class="fld-label">${f.label}${f.required ? '<i>wajib</i>' : ''}</span>
+    ${inp}${f.hint ? `<small>${f.hint}</small>` : ''}</label>`;
+}
+
 function wizardRender(dir = 'fwd'){
   const body = $('#wizardBody');
-  const total = 3;
-  $('#wzBar').style.width = Math.min(100, (wz.stack.length / total) * 100 || 6) + '%';
-  $('#wzBack').hidden = wz.stack.length === 0;
-  $('#wzReset').hidden = wz.stack.length === 0 && !wz.result;
+  const totalQ = 3;
+  const pct = wz.phase === 'result' ? 100 : wz.phase === 'form' ? 75
+            : Math.min(70, (wz.stack.length / totalQ) * 70 || 8);
+  $('#wzBar').style.width = pct + '%';
+  $('#wzBack').hidden = wz.stack.length === 0 && wz.phase === 'q';
+  $('#wzReset').hidden = wz.stack.length === 0 && wz.phase === 'q';
 
   const trail = Object.entries(wz.carry)
     .map(([k, v]) => `<span class="crumb">${k}: <b>${v}</b></span>`).join('');
+  const cls = dir === 'back' ? 'wz-step back' : 'wz-step';
 
-  if(wz.result){
-    const { data:n } = NODES.get(wz.result), d = n.detail || {};
-    let html = `<div class="wz-result">
+  /* ---------- fase 1: pertanyaan ---------- */
+  if(wz.phase === 'q'){
+    const s = WIZARD.steps[wz.current];
+    body.innerHTML = `<div class="${cls}">
       ${trail ? `<div class="wz-trail">${trail}</div>` : ''}
-      <div class="result-head">
-        <span class="result-icon">${ICON.spark}</span>
-        <div><h3>${n.title}</h3><p>${d.summary || ''}</p></div>
-      </div>`;
-    if(d.steps?.length) html += sec('Yang harus kamu lakukan', ICON.list, `<ol class="steps">${d.steps.map(s => `<li>${s}</li>`).join('')}</ol>`);
-    if(d.fields?.length) html += sec('Field Odoo', ICON.tag,
-      `<div class="fields">${d.fields.map(f => `<div class="field"><span>${f.label}</span><b>${f.value}</b></div>`).join('')}</div>`);
-    if(d.checklist?.length) html += sec('Checklist', ICON.check, checklistHTML(n.id, d.checklist));
-    if(d.warn?.length) html += sec('Sering salah di sini', ICON.warn,
-      `<div class="notes">${d.warn.map(w => `<div class="note warn">${ICON.warn}<span>${w}</span></div>`).join('')}</div>`);
-    if(d.confirm?.length) html += sec('Perlu dikonfirmasi', ICON.ask,
-      `<div class="notes">${d.confirm.map(w => `<div class="note ask">${ICON.ask}<span>${w}</span></div>`).join('')}</div>`);
-    html += `<div class="wizard-foot">
-        <button class="btn primary" id="wzGoTree">${ICON.map} Lihat di diagram</button>
-        <button class="btn ghost" id="wzCopy">${ICON.copy} Salin langkah</button>
+      <h3 class="wz-q">${s.question}</h3>
+      <p class="wz-hint">${s.hint || ''}</p>
+      <div class="wz-options">${s.options.map((o, i) =>
+        `<button class="wz-opt" data-i="${i}"><span>${o.label}</span>${ICON.chevron}</button>`).join('')}
       </div></div>`;
-    body.innerHTML = html;
-    $('#wzGoTree').addEventListener('click', () => {
-      ancestors(wz.result).forEach(a => open.add(a));
-      setView('tree');
-      state.selected = wz.result;
-      render({ focus:wz.result });
-      openPanel(wz.result);
-    });
-    $('#wzCopy').addEventListener('click', () => copySteps(wz.result));
+    $$('.wz-opt', body).forEach(b => b.addEventListener('click', () => {
+      const o = s.options[+b.dataset.i];
+      wz.stack.push({ id:wz.current, carry:{ ...wz.carry } });
+      Object.assign(wz.carry, o.carry || {});
+      if(o.result){
+        wz.result = o.result;
+        wz.phase = isBuntu() ? 'result' : 'form';
+      }else{
+        wz.current = o.next;
+      }
+      wizardRender('fwd');
+    }));
     return;
   }
 
-  const step = WIZARD.steps[wz.current];
-  body.innerHTML = `<div class="wz-step ${dir === 'back' ? 'back' : ''}">
+  /* ---------- fase 2: isi data ---------- */
+  if(wz.phase === 'form'){
+    const fields = wzFields();
+    fields.forEach(f => {
+      if(wz.form[f.key] !== undefined) return;
+      if(f.auto === 'retur') wz.form[f.key] = Nomor.peek();
+      if(f.auto === 'today') wz.form[f.key] = new Date().toISOString().slice(0, 10);
+    });
+    body.innerHTML = `<div class="${cls}">
+      ${trail ? `<div class="wz-trail">${trail}</div>` : ''}
+      <h3 class="wz-q">Isi data entry</h3>
+      <p class="wz-hint">Diketik sekali di sini, lalu ditempel ke Odoo dan Spreadsheet dari teks yang sama —
+        supaya keduanya mustahil berbeda.</p>
+      <div class="fldgrid">${fields.map(f => fieldHTML(f, wz.form[f.key])).join('')}</div>
+      <h4 class="wz-sub">${ICON.image} Bukti foto</h4>
+      ${foto.zoneHTML()}
+      <h4 class="wz-sub">${ICON.shield} Pemeriksaan silang</h4>
+      <div class="alerts" id="wzAlerts"></div>
+      <div class="wizard-foot">
+        <button class="btn primary" id="wzGo">${ICON.spark} Lihat hasil &amp; teks siap tempel</button>
+      </div></div>`;
+
+    $$('[data-f]', body).forEach(inp => {
+      const key = inp.dataset.f;
+      const ev = inp.type === 'checkbox' ? 'change' : 'input';
+      inp.addEventListener(ev, () => {
+        wz.form[key] = inp.type === 'checkbox' ? inp.checked : inp.value;
+        if(key === 'noRetur') foto.refresh();
+        refreshAlerts();
+      });
+    });
+    $('#wzGo').addEventListener('click', () => { wz.phase = 'result'; wizardRender('fwd'); });
+    foto.bind();
+    refreshAlerts();
+    return;
+  }
+
+  /* ---------- fase 3: hasil ---------- */
+  const { data:n } = NODES.get(wz.result);
+  const d = n.detail || {};
+  const ctx = wzCtx();
+  const hits = evalRules(ctx);
+  const blocking = hits.filter(h => h.level === 'danger').length;
+
+  let html = `<div class="wz-result">
     ${trail ? `<div class="wz-trail">${trail}</div>` : ''}
-    <h3 class="wz-q">${step.question}</h3>
-    <p class="wz-hint">${step.hint || ''}</p>
-    <div class="wz-options">
-      ${step.options.map((o, i) => `<button class="wz-opt" data-i="${i}">
-        <span>${o.label}</span>${ICON.chevron}</button>`).join('')}
+    <div class="result-head${blocking ? ' is-blocked' : ''}">
+      <span class="result-icon">${blocking ? ICON.warn : ICON.spark}</span>
+      <div><h3>${n.title}</h3><p>${d.summary || ''}</p></div>
+    </div>`;
+
+  html += sec(blocking ? `Perbaiki dulu (${blocking})` : 'Pemeriksaan silang', ICON.shield,
+    `<div class="alerts">${alertsHTML(hits)}</div>`);
+
+  if(d.steps?.length) html += sec('Yang harus kamu lakukan', ICON.list,
+    `<ol class="steps">${d.steps.map(s => `<li>${s}</li>`).join('')}</ol>`);
+
+  if(!isBuntu()) html += sec('Teks siap tempel', ICON.copy, outputsHTML(ctx));
+
+  if(d.fields?.length) html += sec('Field Odoo', ICON.tag,
+    `<div class="fields">${d.fields.map(f => `<div class="field"><span>${f.label}</span><b>${f.value}</b></div>`).join('')}</div>`);
+  if(d.checklist?.length) html += sec('Checklist', ICON.check, checklistHTML(n.id, d.checklist));
+
+  if(!isBuntu()) html += sec('Bukti foto', ICON.image,
+    `<div id="wzFotoResult" class="fotogrid"></div>`);
+
+  if(d.warn?.length) html += sec('Sering salah di sini', ICON.warn,
+    `<div class="notes">${d.warn.map(w => `<div class="note warn">${ICON.warn}<span>${w}</span></div>`).join('')}</div>`);
+  if(d.confirm?.length) html += sec('Perlu dikonfirmasi', ICON.ask,
+    `<div class="notes">${d.confirm.map(w => `<div class="note ask">${ICON.ask}<span>${w}</span></div>`).join('')}</div>`);
+
+  html += `<div class="wizard-foot">
+      <button class="btn primary" id="wzGoTree">${ICON.map} Lihat di diagram</button>
+      <button class="btn ghost" id="wzCopy">${ICON.copy} Salin langkah</button>
+      <button class="btn ghost" id="wzNew">${ICON.plus} Entry baru</button>
     </div></div>`;
-  $$('.wz-opt', body).forEach(b => b.addEventListener('click', () => {
-    const o = step.options[+b.dataset.i];
-    wz.stack.push({ id:wz.current, carry:{ ...wz.carry } });
-    Object.assign(wz.carry, o.carry || {});
-    if(o.result){ wz.result = o.result; } else { wz.current = o.next; }
-    wizardRender('fwd');
-  }));
+  body.innerHTML = html;
+
+  $('#wzGoTree').addEventListener('click', () => {
+    ancestors(wz.result).forEach(a => open.add(a));
+    setView('tree');
+    state.selected = wz.result;
+    render({ focus:wz.result });
+    openPanel(wz.result);
+  });
+  $('#wzCopy').addEventListener('click', () => copySteps(wz.result));
+  $('#wzNew').addEventListener('click', () => wzReset());
+
+  if(!isBuntu()){
+    const grid = $('#wzFotoResult');
+    foto.list().then(recs => {
+      foto.cache = recs;
+      if(!grid) return;
+      grid.innerHTML = recs.length
+        ? recs.map(r => `<figure class="fotoitem">
+            <img src="${URL.createObjectURL(r.blob)}" alt="" loading="lazy" />
+            <figcaption>${Photos.labelKategori(r.kategori)}</figcaption>
+            <div class="fotoitem-act"><button data-foto-dl="${r.id}" title="Unduh">${ICON.download}</button></div>
+          </figure>`).join('') + `<button class="btn ghost sm fotogrid-all" data-foto-all>${ICON.download} Unduh semua</button>`
+        : `<p class="fotogrid-empty">Belum ada foto. Kembali ke langkah sebelumnya untuk menambahkan.</p>`;
+    });
+  }
+}
+
+function wzReset(){
+  wz.stack = []; wz.carry = {}; wz.form = {}; wz.result = null;
+  wz.current = WIZARD.start; wz.phase = 'q'; foto.cache = [];
+  wizardRender('back');
 }
 $('#wzBack').addEventListener('click', () => {
+  if(wz.phase === 'result' && !isBuntu()){ wz.phase = 'form'; wizardRender('back'); return; }
   const prev = wz.stack.pop();
   if(!prev) return;
-  wz.current = prev.id; wz.carry = prev.carry; wz.result = null;
+  wz.current = prev.id; wz.carry = prev.carry; wz.result = null; wz.phase = 'q';
   wizardRender('back');
 });
-$('#wzReset').addEventListener('click', () => {
-  wz.stack = []; wz.carry = {}; wz.result = null; wz.current = WIZARD.start;
-  wizardRender('back');
+$('#wzReset').addEventListener('click', wzReset);
+
+/* tempel screenshot langsung dari clipboard saat mengisi form */
+document.addEventListener('paste', e => {
+  if(state.view !== 'wizard' || wz.phase !== 'form') return;
+  const files = [...(e.clipboardData?.items || [])]
+    .filter(i => i.kind === 'file' && i.type.startsWith('image/'))
+    .map(i => i.getAsFile()).filter(Boolean);
+  if(!files.length) return;
+  e.preventDefault();
+  foto.take(files);
 });
 
 /* ------------------------------ catatan & PR ------------------------------ */
@@ -633,14 +936,55 @@ function buildDoc(){
   $('#docShell').innerHTML = `
     <div class="doc-card">
       <h2>Status peta alur</h2>
-      <p>Peta ini dibangun dari SOP yang kamu jelaskan. Cabang yang detailnya belum kamu sampaikan sengaja ditandai, bukan ditebak.</p>
+      <p>Peta ini dibangun dari SOP yang dijelaskan pemilik proses. Cabang yang detailnya belum disampaikan
+         ditandai, bukan ditebak.</p>
       <div class="stat-row">
         <div class="stat"><b>${all.length}</b><span>total node</span></div>
         <div class="stat"><b>4</b><span>cabang status</span></div>
         <div class="stat"><b>${done}</b><span>hasil akhir jelas</span></div>
         <div class="stat"><b>${pend}</b><span>menunggu detail</span></div>
+        <div class="stat"><b>${RULES.length}</b><span>aturan silang</span></div>
         <div class="stat"><b>${confirms.length}</b><span>perlu dikonfirmasi</span></div>
       </div>
+      <h3>Versi SOP</h3>
+      <div class="fields">
+        <div class="field"><span>Versi</span><b>${META.version}</b></div>
+        <div class="field"><span>Diperbarui</span><b>${META.updated}</b></div>
+        <div class="field"><span>Pemilik proses</span><b>${META.owner}</b></div>
+      </div>
+      <div class="wizard-foot">
+        <button class="btn primary" id="btnPrint">${ICON.print} Cetak poster A4</button>
+      </div>
+    </div>
+
+    <div class="doc-card">
+      <h2>Nomor retur — benang merah</h2>
+      <p>Satu kejadian retur meninggalkan empat jejak. Tanpa nomor yang sama di keempatnya, menelusuri
+         satu kesalahan berarti membuka semuanya satu per satu.</p>
+      <div class="fields" style="margin-top:14px">
+        <div class="field"><span>Format</span><b>${NOMOR.format}</b></div>
+        <div class="field"><span>Contoh</span><b>${NOMOR.contoh}</b></div>
+        <div class="field"><span>Nomor berikutnya</span><b id="nomorNext">${Nomor.peek()}</b></div>
+      </div>
+      <h3>Wajib muncul di</h3>
+      ${NOMOR.jejak.map((j, i) => `<div class="q-item"><span class="q-from">${i + 1}</span><span>${j}</span></div>`).join('')}
+    </div>
+
+    <div class="doc-card" id="arsipCard">
+      <h2>Arsip bukti foto</h2>
+      <p>Foto yang kamu taruh lewat mode Simulasi disimpan di peramban perangkat ini dan dikelompokkan
+         per nomor retur. <b>Ini penampungan sementara, bukan backup</b> — tujuan akhirnya tetap
+         dilampirkan ke record Odoo.</p>
+      <div id="arsipList"><p class="fotogrid-empty">Memuat…</p></div>
+    </div>
+
+    <div class="doc-card">
+      <h2>Aturan silang yang diperiksa otomatis</h2>
+      <p>Mode Simulasi menjalankan aturan ini setiap kali kamu mengisi data, dan menandai kontradiksi
+         sebelum data terlanjur masuk Odoo.</p>
+      <h3>Daftar aturan</h3>
+      ${RULES.map(r => `<div class="q-item"><span class="q-from ${r.level}">${r.level}</span>
+        <span><b>${r.title}</b><br>${r.msg}</span></div>`).join('')}
     </div>
 
     <div class="doc-card">
@@ -659,7 +1003,9 @@ function buildDoc(){
 
     <div class="doc-card">
       <h2>Cara menambah alur baru</h2>
-      <p>Semua isi peta ini berasal dari satu file: <b>assets/js/data.js</b>. Tambahkan atau ubah node di sana, lalu commit — diagram, simulasi, checklist, dan halaman ini ikut ter-update sendiri tanpa menyentuh kode tampilan.</p>
+      <p>Semua isi peta ini berasal dari satu file: <b>assets/js/data.js</b>. Tambahkan atau ubah node di sana,
+         lalu commit — diagram, simulasi, aturan silang, checklist, poster cetak, dan halaman ini ikut
+         ter-update sendiri tanpa menyentuh kode tampilan.</p>
       <h3>Bentuk satu node</h3>
       <div class="fields">
         <div class="field"><span>id</span><b>unik, huruf kecil</b></div>
@@ -672,7 +1018,142 @@ function buildDoc(){
         <div class="field"><span>detail.confirm</span><b>pertanyaan terbuka</b></div>
         <div class="field"><span>children</span><b>node turunan</b></div>
       </div>
+      <h3>Langkah yang dipakai ulang</h3>
+      <p>Langkah yang muncul di beberapa cabang (buka database, isi form, validate) ditulis sekali di objek
+         <b>STEPS</b>, lalu dipanggil dengan <b>step('key', { id })</b>. Jangan menyalin langkah yang sama ke
+         dua cabang — itu justru sumber inkonsistensi yang ingin dicegah aplikasi ini.</p>
     </div>`;
+
+  $('#btnPrint').addEventListener('click', doPrint);
+  renderArsip();
+}
+
+/* ------------------------------ arsip foto ------------------------------ */
+async function renderArsip(){
+  const box = $('#arsipList');
+  if(!box) return;
+  let recs = [];
+  try{ recs = await Photos.all(); }catch{ box.innerHTML = `<p class="fotogrid-empty">Penyimpanan foto tidak tersedia di peramban ini.</p>`; return; }
+  if(!recs.length){ box.innerHTML = `<p class="fotogrid-empty">Belum ada foto tersimpan.</p>`; return; }
+
+  const grup = new Map();
+  recs.forEach(r => { if(!grup.has(r.noRetur)) grup.set(r.noRetur, []); grup.get(r.noRetur).push(r); });
+  const urut = [...grup.entries()].sort((a, b) =>
+    Math.max(...b[1].map(r => r.addedAt)) - Math.max(...a[1].map(r => r.addedAt)));
+
+  const est = await Photos.usage();
+  const pakai = est?.usage ? (est.usage / 1048576).toFixed(1) + ' MB terpakai' : '';
+
+  box.innerHTML = urut.map(([no, list]) => `
+    <div class="arsip">
+      <div class="arsip-head">
+        <b>${no}</b>
+        <span>${list.length} foto · ${new Date(Math.max(...list.map(r => r.addedAt))).toLocaleDateString('id-ID')}</span>
+        <button class="btn ghost sm" data-arsip-dl="${no}">${ICON.download} Unduh</button>
+      </div>
+      <div class="fotogrid">
+        ${list.map(r => `<figure class="fotoitem">
+            <img src="${URL.createObjectURL(r.blob)}" alt="" loading="lazy" />
+            <figcaption>${Photos.labelKategori(r.kategori)}</figcaption>
+            <div class="fotoitem-act">
+              <button data-arsip-rm="${r.id}" title="Hapus">${ICON.trash}</button>
+            </div>
+          </figure>`).join('')}
+      </div>
+    </div>`).join('') + (pakai ? `<p class="fotogrid-empty">${pakai}</p>` : '');
+
+  box._recs = recs;
+  $$('[data-arsip-dl]', box).forEach(b => b.addEventListener('click', () => {
+    const list = grup.get(b.dataset.arsipDl) || [];
+    list.forEach((r, i) => setTimeout(() => Photos.download(r, i + 1), i * 250));
+  }));
+  $$('[data-arsip-rm]', box).forEach(b => b.addEventListener('click', async () => {
+    await Photos.remove(+b.dataset.arsipRm);
+    toast('Foto dihapus');
+    renderArsip();
+  }));
+}
+
+/* ------------------------------ poster cetak ------------------------------ */
+function qrDataURL(text, cell = 4){
+  try{
+    const qr = qrcode(0, 'M');
+    qr.addData(text);
+    qr.make();
+    return qr.createDataURL(cell, 8);
+  }catch{ return ''; }
+}
+
+function buildPrintSheet(){
+  let sheet = $('#printSheet');
+  if(!sheet){
+    sheet = document.createElement('div');
+    sheet.id = 'printSheet';
+    document.body.appendChild(sheet);
+  }
+  const cabang = NODES.get('decision-status').data.children;
+  const ringkas = {
+    c1: ['Menu: GD Ke Gudang Retur', `${REF.locGD} → ${REF.locRT}`, 'Contact + Source Document + Note', 'Mark as Todo → Validate'],
+    c2: ['Menu: Mobil 1 / Mobil 2 Ke Gudang Retur', 'Stok pengganti SAMA tersedia → nota', 'Stok TIDAK tersedia → nota + screenshot', 'Ubah status jadi "Sudah Tukar"'],
+    c3: ['Alur belum ditetapkan', 'Jangan proses sendiri', 'Tanyakan ke pemilik proses'],
+    c4: ['Alur belum ditetapkan', 'Jangan proses sendiri', 'Tanyakan ke pemilik proses'],
+  };
+  const aturan = [
+    'Mulai dari Spreadsheet, bukan dari Odoo.',
+    `Terbitkan nomor retur ${NOMOR.format} dan tulis di Spreadsheet, Source Document Odoo, nota, dan nama file screenshot.`,
+    'Verifikasi produk lewat kode / barcode, bukan dari nama.',
+    'Qty Demand = qty fisik barang.',
+    'Baca ulang SEBELUM klik Validate.',
+    'Ganti barang beda tanpa screenshot = bukti tidak sah.',
+    'Nota terbit → status Spreadsheet wajib berubah jadi "Sudah Tukar".',
+  ];
+
+  sheet.innerHTML = `
+    <div class="ps-head">
+      <div>
+        <h1>Alur Gudang Retur</h1>
+        <p>Spreadsheet → Odoo · versi ${META.version} · ${META.updated}</p>
+      </div>
+      <div class="ps-qr">
+        <img src="${qrDataURL(location.href.split('#')[0])}" alt="QR menuju aplikasi" />
+        <span>Buka versi interaktif</span>
+      </div>
+    </div>
+
+    <div class="ps-flow">
+      <div class="ps-start"><b>Barang retur masuk</b><span>Catat di Spreadsheet, terbitkan nomor retur</span></div>
+      <div class="ps-q">Baca kolom <b>Status Kerusakan Barang</b></div>
+      <div class="ps-cols">
+        ${cabang.map(c => `
+          <div class="ps-col ps-${c.type === 'pending' ? 'pend' : 'ok'}">
+            <h2>${strip(c.title)}</h2>
+            <ol>${(ringkas[c.id] || []).map(t => `<li>${t}</li>`).join('')}</ol>
+          </div>`).join('')}
+      </div>
+    </div>
+
+    <div class="ps-rules">
+      <h2>Aturan yang tidak boleh dilanggar</h2>
+      <ol>${aturan.map(a => `<li>${a}</li>`).join('')}</ol>
+    </div>
+
+    <p class="ps-foot">Dicetak ${new Date().toLocaleDateString('id-ID', { day:'numeric', month:'long', year:'numeric' })}
+      · cabang Cancel &amp; Potong Nota belum ditetapkan — jangan diproses tanpa konfirmasi</p>`;
+}
+
+function doPrint(){
+  buildPrintSheet();
+  document.body.classList.add('is-printing');
+  setTimeout(() => window.print(), 80);
+}
+window.addEventListener('afterprint', () => document.body.classList.remove('is-printing'));
+
+/* ------------------------------ offline (PWA) ------------------------------ */
+function registerSW(){
+  if(!('serviceWorker' in navigator)) return;
+  const ok = location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname);
+  if(!ok) return;
+  navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
 /* ------------------------------ mulai ------------------------------ */
@@ -689,6 +1170,7 @@ function boot(){
   buildDoc();
   wizardRender();
   render({ fit:true });
+  registerSW();
   setTimeout(() => $('#appLoader').classList.add('is-done'), 260);
 }
 if(document.readyState === 'complete') boot();
