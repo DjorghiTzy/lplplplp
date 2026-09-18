@@ -1157,6 +1157,17 @@ function registerSW(){
 }
 
 /* ------------------------------ mulai ------------------------------ */
+/* Panel detail perlu tahu tinggi topbar yang sebenarnya — topbar bisa
+   berubah tinggi saat tab membungkus di layar sempit. */
+function trackTopbar(){
+  const bar = $('.topbar');
+  if(!bar) return;
+  const apply = () => document.documentElement.style.setProperty('--topbar-h', bar.offsetHeight + 'px');
+  apply();
+  if(window.ResizeObserver) new ResizeObserver(apply).observe(bar);
+  else window.addEventListener('resize', apply);
+}
+
 window.addEventListener('resize', () => { movePill(); });
 document.addEventListener('keydown', e => {
   if(e.target.matches('input')) return;
@@ -1166,6 +1177,7 @@ document.addEventListener('keydown', e => {
 });
 
 function boot(){
+  trackTopbar();
   movePill();
   buildDoc();
   wizardRender();

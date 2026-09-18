@@ -203,14 +203,29 @@ mencetaknya. Gaya cetak ada di blok `@media print` di akhir `style.css`; di luar
 domain yang di-hardcode. Verifikasi hasil cetak lewat `page.pdf()` di Playwright, bukan
 screenshot biasa — screenshot media print tidak mengecat latar putih.
 
-### Angka ajaib yang harus dijaga selaras
+### Tinggi topbar — jangan di-hardcode lagi
 
-Tinggi topbar **63px** muncul di tiga tempat di `style.css`: `.stage` (baris ~153),
-`.panel` (~367–369), dan `.stage` di media query ≤640px (memakai 124px karena tab
-membungkus ke baris kedua). Kalau tinggi topbar berubah, ubah ketiganya bersamaan.
+Sempat ada angka 63px yang disalin ke tiga tempat, dan langsung meleset begitu topbar
+berubah (tingginya 66px di desktop, 68px di bawah 900px, 127px saat tab membungkus di HP).
+Sekarang: `body` adalah flex kolom (`.topbar` flex:none, `.stage` flex:1), dan `app.js`
+(`trackTopbar()`) menulis tinggi topbar yang sebenarnya ke custom property `--topbar-h`
+lewat ResizeObserver — hanya `.panel` yang memakainya.
+
+**Jangan mengembalikan tinggi topbar sebagai angka tetap di CSS.** Kalau ada elemen baru yang
+perlu tahu tinggi topbar, pakai `var(--topbar-h)`.
 
 Lebar kartu ada di token `--node-w` (264px desktop, 230px ≤640px). JS membaca lebar asli
 lewat `offsetWidth`, jadi cukup mengubah tokennya.
+
+### Posisi judul aplikasi — sedang kosong atas permintaan
+
+Judul dan logo **sengaja tidak dipasang** di pojok kiri atas; pemilik proses ingin
+menentukan sendiri letaknya nanti. Topbar sekarang grid `1fr auto 1fr`: slot kiri kosong
+(`.topbar-slot`), tab di tengah, search + tema di kanan. Gaya `.brand`, `.brand-mark`, dan
+`.brand-text` sengaja dipertahankan di `style.css` supaya judul tinggal ditempel begitu
+posisinya diputuskan.
+
+**Jangan mengembalikan judul ke pojok kiri atas tanpa diminta.**
 
 ### Panel detail
 
