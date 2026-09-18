@@ -217,15 +217,27 @@ perlu tahu tinggi topbar, pakai `var(--topbar-h)`.
 Lebar kartu ada di token `--node-w` (264px desktop, 230px ≤640px). JS membaca lebar asli
 lewat `offsetWidth`, jadi cukup mengubah tokennya.
 
-### Posisi judul aplikasi — sedang kosong atas permintaan
+### Judul aplikasi — tengah atas
 
-Judul dan logo **sengaja tidak dipasang** di pojok kiri atas; pemilik proses ingin
-menentukan sendiri letaknya nanti. Topbar sekarang grid `1fr auto 1fr`: slot kiri kosong
-(`.topbar-slot`), tab di tengah, search + tema di kanan. Gaya `.brand`, `.brand-mark`, dan
-`.brand-text` sengaja dipertahankan di `style.css` supaya judul tinggal ditempel begitu
-posisinya diputuskan.
+Topbar memakai `grid-template-areas`:
 
-**Jangan mengembalikan judul ke pojok kiri atas tanpa diminta.**
+```
+".    brand   actions"     ← baris 1: judul di tengah, search + tema di kanan
+"tabs tabs    tabs"        ← baris 2: tab di tengah
+```
+
+Kolom kiri sengaja kosong (`.`) supaya kolom `auto` di tengah benar-benar berada di tengah.
+
+**Gotcha yang sudah menggigit:** `1fr auto 1fr` hanya memusatkan kolom tengah selama kedua
+kolom `1fr` bisa sama lebar. Di layar sempit, kolom kanan terdorong melebar oleh lebar
+minimum search + tombol tema, kolom kiri mengecil, dan judul ikut bergeser ke kiri.
+Karena itu di ≤640px judul mendapat barisnya sendiri dan `.topbar-actions` dikeluarkan dari
+grid (`position:absolute`) supaya lebarnya tidak lagi memengaruhi titik tengah. Kotak
+pencarian di sana menyusut jadi ikon dan melebar saat difokus.
+
+Kalau mengubah apa pun di topbar, ukur ulang di 1440 / 390 / 360 / 320 px: pusat `.brand`
+harus sama dengan `innerWidth / 2`, jarak `.brand` ke `.topbar-actions` harus positif, dan
+`document.documentElement.scrollWidth` tidak boleh melebihi `innerWidth`.
 
 ### Panel detail
 
